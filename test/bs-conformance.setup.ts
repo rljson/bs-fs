@@ -4,17 +4,19 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { BsMem, BsTestSetup } from '@rljson/bs';
+import { BsTestSetup } from '@rljson/bs';
+
+import { BsFs } from './bs-fs.js';
 
 // .............................................................................
 /**
- * Test setup for BsMem conformance tests
+ * Test setup for BsFs conformance tests
  */
 class MyBsTestSetup implements BsTestSetup {
-  bs: BsMem;
+  bs: BsFs;
 
   constructor() {
-    this.bs = new BsMem();
+    this.bs = new BsFs('./test-blobs');
   }
 
   async beforeAll(): Promise<void> {
@@ -23,7 +25,7 @@ class MyBsTestSetup implements BsTestSetup {
 
   async beforeEach(): Promise<void> {
     // Clear before each test
-    this.bs.clear();
+    await this.bs.clear();
   }
 
   async afterEach(): Promise<void> {
@@ -32,6 +34,7 @@ class MyBsTestSetup implements BsTestSetup {
 
   async afterAll(): Promise<void> {
     // Cleanup after all tests
+    await this.bs.clear();
   }
 }
 

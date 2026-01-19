@@ -6,6 +6,17 @@
 
 import { hshBuffer } from '@rljson/hash';
 
+import { createReadStream } from 'node:fs';
+import {
+  access,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import type {
@@ -14,19 +25,29 @@ import type {
   DownloadBlobOptions,
   ListBlobsOptions,
   ListBlobsResult,
-} from './bs.js';
-interface StoredBlob {
-  content: Buffer;
-  properties: BlobProperties;
+} from '@rljson/bs';
+
+interface StoredMetadata {
+  blobId: string;
+  size: number;
+  createdAt: string;
 }
 
 /**
- * In-memory implementation of content-addressable blob storage.
- * All blobs are stored in memory using a Map.
- * Useful for testing and development.
+ * Filesystem-based implementation of content-addressable blob storage.
+ * All blobs are stored on the filesystem in a hierarchical directory structure.
+ * Useful for persistent storage and production use.
  */
-export class BsMem implements Bs {
-  private readonly blobs = new Map<string, StoredBlob>();
+export class BsFs implements Bs {
+  private readonly baseDir: string;
+
+  /**
+   * Create a new BsFs instance
+   * @param baseDir - Base directory for blob storage (defaults to './blobs')
+   */
+  constructor(baseDir: string = './blobs') {
+    this.baseDir = baseDir;
+  }
 
   /**
    * Convert content to Buffer
@@ -56,29 +77,78 @@ export class BsMem implements Bs {
     return Buffer.concat(chunks);
   }
 
+  /**
+   * Generate file path and directory structure for a blobId
+   * Creates subdirectories using every two letters from blobId
+   * Example: abc123def456 -> blobs/ab/c1/23/de/abc123def456.txt
+   */
+  private getBlobPath(blobId: string): {
+    filePath: string;
+    metaPath: string;
+    dir: string;
+  } {
+    const subDirs: string[] = [];
+
+    // Create subdirectories from every two letters
+    for (let i = 0; i < Math.min(blobId.length, 8); i += 2) {
+      if (i + 2 <= blobId.length) {
+        subDirs.push(blobId.substring(i, i + 2));
+      }
+    }
+
+    const dir = join(this.baseDir, ...subDirs);
+    const filePath = join(dir, `${blobId}.txt`);
+    const metaPath = join(dir, `${blobId}.meta.json`);
+
+    return { filePath, metaPath, dir };
+  }
+
+  /**
+   * Ensure directory exists
+   */
+  private async ensureDir(dir: string): Promise<void> {
+    await mkdir(dir, { recursive: true });
+  }
+
   async setBlob(
     content: Buffer | string | ReadableStream,
   ): Promise<BlobProperties> {
     const buffer = await this.toBuffer(content);
     const blobId = hshBuffer(buffer);
+    const { filePath, metaPath, dir } = this.getBlobPath(blobId);
 
     // Check if blob already exists (deduplication)
-    const existing = this.blobs.get(blobId);
-    if (existing) {
-      return existing.properties;
+    try {
+      await access(filePath);
+      // Blob exists, read and return existing properties
+      const metaContent = await readFile(metaPath, 'utf8');
+      const metadata: StoredMetadata = JSON.parse(metaContent);
+      return {
+        blobId: metadata.blobId,
+        size: metadata.size,
+        createdAt: new Date(metadata.createdAt),
+      };
+    } catch {
+      // Blob doesn't exist, create it
     }
 
     // Store new blob
+    await this.ensureDir(dir);
+    await writeFile(filePath, buffer);
+
     const properties: BlobProperties = {
       blobId,
       size: buffer.length,
       createdAt: new Date(),
     };
 
-    this.blobs.set(blobId, {
-      content: buffer,
-      properties,
-    });
+    const metadata: StoredMetadata = {
+      blobId: properties.blobId,
+      size: properties.size,
+      createdAt: properties.createdAt.toISOString(),
+    };
+
+    await writeFile(metaPath, JSON.stringify(metadata, null, 2), 'utf8');
 
     return properties;
   }
@@ -87,59 +157,134 @@ export class BsMem implements Bs {
     blobId: string,
     options?: DownloadBlobOptions,
   ): Promise<{ content: Buffer; properties: BlobProperties }> {
-    const stored = this.blobs.get(blobId);
-    if (!stored) {
+    const { filePath, metaPath } = this.getBlobPath(blobId);
+
+    try {
+      await access(filePath);
+    } catch {
       throw new Error(`Blob not found: ${blobId}`);
     }
 
-    let content = stored.content;
+    let content = await readFile(filePath);
 
     // Handle range request
     if (options?.range) {
       const { start, end } = options.range;
-      content = stored.content.subarray(start, end);
+      content = content.subarray(start, end);
     }
+
+    // Read metadata
+    const metaContent = await readFile(metaPath, 'utf8');
+    const metadata: StoredMetadata = JSON.parse(metaContent);
+
+    const properties: BlobProperties = {
+      blobId: metadata.blobId,
+      size: metadata.size,
+      createdAt: new Date(metadata.createdAt),
+    };
 
     return {
       content,
-      properties: stored.properties,
+      properties,
     };
   }
 
   async getBlobStream(blobId: string): Promise<ReadableStream> {
-    const stored = this.blobs.get(blobId);
-    if (!stored) {
+    const { filePath } = this.getBlobPath(blobId);
+
+    try {
+      await access(filePath);
+    } catch {
       throw new Error(`Blob not found: ${blobId}`);
     }
 
-    // Convert Buffer to ReadableStream
-    const nodeStream = Readable.from(stored.content);
+    // Create read stream from file
+    const nodeStream = createReadStream(filePath);
     return Readable.toWeb(nodeStream) as ReadableStream;
   }
 
   async deleteBlob(blobId: string): Promise<void> {
-    const deleted = this.blobs.delete(blobId);
-    if (!deleted) {
+    const { filePath, metaPath } = this.getBlobPath(blobId);
+
+    try {
+      await access(filePath);
+    } catch {
       throw new Error(`Blob not found: ${blobId}`);
     }
+
+    await unlink(filePath);
+    await unlink(metaPath);
   }
 
   async blobExists(blobId: string): Promise<boolean> {
-    return this.blobs.has(blobId);
+    const { filePath } = this.getBlobPath(blobId);
+    try {
+      await access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async getBlobProperties(blobId: string): Promise<BlobProperties> {
-    const stored = this.blobs.get(blobId);
-    if (!stored) {
+    const { filePath, metaPath } = this.getBlobPath(blobId);
+
+    try {
+      await access(filePath);
+    } catch {
       throw new Error(`Blob not found: ${blobId}`);
     }
-    return stored.properties;
+
+    const metaContent = await readFile(metaPath, 'utf8');
+    const metadata: StoredMetadata = JSON.parse(metaContent);
+
+    return {
+      blobId: metadata.blobId,
+      size: metadata.size,
+      createdAt: new Date(metadata.createdAt),
+    };
+  }
+
+  /**
+   * Recursively find all blob metadata files in the storage directory
+   */
+  private async findAllBlobs(): Promise<BlobProperties[]> {
+    const blobs: BlobProperties[] = [];
+
+    const scanDir = async (dir: string): Promise<void> => {
+      try {
+        const entries = await readdir(dir, { withFileTypes: true });
+
+        for (const entry of entries) {
+          const fullPath = join(dir, entry.name);
+
+          if (entry.isDirectory()) {
+            await scanDir(fullPath);
+          } else if (entry.isFile() && entry.name.endsWith('.meta.json')) {
+            try {
+              const metaContent = await readFile(fullPath, 'utf8');
+              const metadata: StoredMetadata = JSON.parse(metaContent);
+              blobs.push({
+                blobId: metadata.blobId,
+                size: metadata.size,
+                createdAt: new Date(metadata.createdAt),
+              });
+            } catch {
+              // Skip invalid metadata files
+            }
+          }
+        }
+      } catch {
+        // Directory doesn't exist or can't be read
+      }
+    };
+
+    await scanDir(this.baseDir);
+    return blobs;
   }
 
   async listBlobs(options?: ListBlobsOptions): Promise<ListBlobsResult> {
-    let blobs = Array.from(this.blobs.values()).map(
-      (stored) => stored.properties,
-    );
+    let blobs = await this.findAllBlobs();
 
     // Filter by prefix if provided
     if (options?.prefix) {
@@ -183,29 +328,38 @@ export class BsMem implements Bs {
     expiresIn: number,
     permissions?: 'read' | 'delete',
   ): Promise<string> {
+    const { filePath } = this.getBlobPath(blobId);
+
     // Check if blob exists
-    if (!this.blobs.has(blobId)) {
+    try {
+      await access(filePath);
+    } catch {
       throw new Error(`Blob not found: ${blobId}`);
     }
 
-    // For in-memory implementation, return a mock URL
+    // For filesystem implementation, return a mock URL
     // In a real implementation, this would generate a proper signed URL
     const expires = Date.now() + expiresIn * 1000;
     const perm = permissions ?? 'read';
-    return `mem://${blobId}?expires=${expires}&permissions=${perm}`;
+    return `fs://${blobId}?expires=${expires}&permissions=${perm}`;
   }
 
   /**
    * Clear all blobs from storage (useful for testing)
    */
-  clear(): void {
-    this.blobs.clear();
+  async clear(): Promise<void> {
+    try {
+      await rm(this.baseDir, { recursive: true, force: true });
+    } catch {
+      // Directory doesn't exist or can't be removed
+    }
   }
 
   /**
    * Get the number of blobs in storage
    */
-  get size(): number {
-    return this.blobs.size;
+  async size(): Promise<number> {
+    const blobs = await this.findAllBlobs();
+    return blobs.length;
   }
 }
