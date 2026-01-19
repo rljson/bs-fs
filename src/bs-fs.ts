@@ -5,9 +5,9 @@
 // found in the LICENSE file in the root of this package.
 
 // .............................................................................
-export class TemplateProject {
+export class BsFs {
   /** Example instance for test purposes */
-  static get example(): TemplateProject {
-    return new TemplateProject();
+  static get example(): BsFs {
+    return new BsFs();
   }
 }

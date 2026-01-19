@@ -6,12 +6,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { TemplateProject } from '../src/template-project';
+import { BsFs } from '../src/bs-fs';
 
 
-describe('TemplateProject', () => {
+describe('BsFs', () => {
   it('should validate a template', () => {
-    const templateProject = TemplateProject.example;
-    expect(templateProject).toBeDefined();
+    const bsFs = BsFs.example;
+    expect(bsFs).toBeDefined();
   });
 });

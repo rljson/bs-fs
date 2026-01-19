@@ -1,9 +1,9 @@
 {
-  "name": "@rljson/template-project",
-  "version": "0.0.18",
-  "description": "Rljson template-project description",
-  "homepage": "https://github.com/rljson/template-project",
-  "bugs": "https://github.com/rljson/template-project/issues",
+  "name": "@rljson/bs-fs",
+  "version": "0.0.1",
+  "description": "Rljson bs-fs description",
+  "homepage": "https://github.com/rljson/bs-fs",
+  "bugs": "https://github.com/rljson/bs-fs/issues",
   "private": false,
   "license": "MIT",
   "engines": {
@@ -11,9 +11,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rljson/template-project.git"
+    "url": "git+https://github.com/rljson/bs-fs.git"
   },
-  "main": "dist/template-project.js",
+  "main": "dist/bs-fs.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist"
