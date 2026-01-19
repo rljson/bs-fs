@@ -1,0 +1,26 @@
+{
+  "page1": {
+    "blobs": [
+      {
+        "blobId": "CLJcu3tHpMGYkTh2v22Btk",
+        "size": 6
+      },
+      {
+        "blobId": "mxtLCMWK9yZk85Ndu3soJW",
+        "size": 6
+      }
+    ]
+  },
+  "page2": {
+    "blobs": [
+      {
+        "blobId": "wgDsFA1U0THzo3usEvi4k5",
+        "size": 6
+      },
+      {
+        "blobId": "wUtA3ddBVABbzU7s-K9mN1",
+        "size": 6
+      }
+    ]
+  }
+}

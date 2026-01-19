@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@rljson/bs':
+        specifier: ^0.0.18
+        version: 0.0.18
       '@rljson/hash':
         specifier: ^0.0.18
         version: 0.0.18
@@ -381,6 +384,10 @@ packages:
   '@nodelib/fs.walk@1.2.8':
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
+
+  '@rljson/bs@0.0.18':
+    resolution: {integrity: sha512-bQfDSEt6g3li5aWOd6z0k1dnr/eLFWh2etfNXaeZ6aTneYm9JmzQRDNQaTjgytxhsBBQNZHL3XBgw27zJtjTRQ==}
+    engines: {node: '>=22.14.0'}
 
   '@rljson/hash@0.0.17':
     resolution: {integrity: sha512-yZySXCa07gyo/HTuUaL/3gyq8kP94c6ZIWFEMZTNDeSVz568YKvj1fdEXG6PApg39HD5UeO/jkNE484McoP5Rg==}
@@ -2049,6 +2056,12 @@ snapshots:
     dependencies:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
+
+  '@rljson/bs@0.0.18':
+    dependencies:
+      '@rljson/hash': 0.0.18
+      '@rljson/json': 0.0.23
+      '@rljson/rljson': 0.0.73
 
   '@rljson/hash@0.0.17':
     dependencies:

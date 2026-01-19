@@ -21,11 +21,12 @@
   "type": "module",
   "scripts": {
     "build": "pnpx vite build && tsc && node scripts/copy-readme-to-dist.js",
-    "test": "pnpx vitest run --coverage && pnpm run lint",
+    "test": "pnpm installConformanceTests && pnpx vitest run --coverage && pnpm run lint",
     "prebuild": "npm run test",
     "prepublishOnly": "npm run build",
     "lint": "pnpx eslint",
-    "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test"
+    "updateGoldens": "cross-env UPDATE_GOLDENS=true pnpm test",
+    "installConformanceTests": "node scripts/install-conformance-tests.js"
   },
   "devDependencies": {
     "@types/node": "^25.0.9",
@@ -49,6 +50,7 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
+    "@rljson/bs": "^0.0.18",
     "@rljson/hash": "^0.0.18",
     "@rljson/json": "^0.0.23",
     "@rljson/rljson": "^0.0.73"
