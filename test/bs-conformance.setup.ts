@@ -6,7 +6,7 @@
 
 import { BsTestSetup } from '@rljson/bs';
 
-import { BsFs } from './bs-fs.js';
+import { BsFs } from '../src/bs-fs.ts';
 
 // .............................................................................
 /**

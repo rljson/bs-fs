@@ -25,6 +25,12 @@ export default defineConfig({
         '@rljson/rljson',
         '@rljson/json',
         '@rljson/hash',
+        '@rljson/bs',
+        'node:fs',
+        'node:fs/promises',
+        'node:path',
+        'node:stream',
+        'node:crypto',
         // Add all peer depencies from package.json here
       ],
       output: {

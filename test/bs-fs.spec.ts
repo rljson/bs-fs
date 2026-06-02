@@ -8,7 +8,7 @@ import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { BsFs } from './bs-fs.js';
+import { BsFs } from '../src/bs-fs.ts';
 
 describe('BsFs', () => {
   let bs: BsFs;
