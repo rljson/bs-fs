@@ -1,1 +1,1 @@
-"BsFs.example\n  Returns an instance of the BsFs.\n    {}"
+"BsFs.example\n  Returns an instance of the BsFs.\n    {\n  \"baseDir\": \"./.bs-fs-example\"\n}"
