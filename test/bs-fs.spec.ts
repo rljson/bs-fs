@@ -125,6 +125,28 @@ describe('BsFs', () => {
       expect(result.content.toString('utf8')).toBe('234');
     });
 
+    it('range with only a start reads to the end of the blob', async () => {
+      const props = await bs.setBlob('0123456789');
+      const result = await bs.getBlob(props.blobId, { range: { start: 7 } });
+      expect(result.content.toString('utf8')).toBe('789');
+    });
+
+    it('a zero-length range yields empty content', async () => {
+      const props = await bs.setBlob('0123456789');
+      const result = await bs.getBlob(props.blobId, {
+        range: { start: 4, end: 4 },
+      });
+      expect(result.content.length).toBe(0);
+    });
+
+    it('a range end past the blob size is clamped to the end', async () => {
+      const props = await bs.setBlob('0123456789');
+      const result = await bs.getBlob(props.blobId, {
+        range: { start: 8, end: 99 },
+      });
+      expect(result.content.toString('utf8')).toBe('89');
+    });
+
     it('should throw error for non-existent blob', async () => {
       await expect(bs.getBlob('non-existent-id')).rejects.toThrow(
         'Blob not found: non-existent-id',
