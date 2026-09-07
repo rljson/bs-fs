@@ -29,6 +29,8 @@
     "installConformanceTests": "node scripts/install-conformance-tests.js"
   },
   "devDependencies": {
+    "@rljson/dna-rljson": "^0.2.0",
+    "@tssuite/helix-js": "^0.2.1",
     "@types/node": "^25.0.9",
     "@typescript-eslint/eslint-plugin": "^8.53.1",
     "@typescript-eslint/parser": "^8.53.1",
