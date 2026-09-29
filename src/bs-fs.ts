@@ -6,6 +6,7 @@
 
 import { hshBuffer } from '@rljson/hash';
 
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import {
   access,
@@ -28,6 +29,15 @@ import type {
   ListBlobsOptions,
   ListBlobsResult,
 } from '@rljson/bs';
+
+/**
+ * Characters of the base64url digest that make a blobId.
+ *
+ * Fixed by `@rljson/hash`'s default `hashLength`, and repeated here because the
+ * streaming write computes its digest itself. A mismatch would store a blob
+ * under an id nothing else in the system would look for.
+ */
+const _HASH_LENGTH = 22;
 
 interface StoredMetadata {
   blobId: string;
@@ -57,31 +67,18 @@ export class BsFs implements Bs {
   }
 
   /**
-   * Convert content to Buffer
-   * @param content - Content to convert (Buffer, string, or ReadableStream)
+   * Convert content to Buffer.
+   *
+   * No stream case: a stream never reaches here, because collecting one into a
+   * Buffer is the cost {@link BsFs._setBlobFromStream} exists to avoid. The
+   * narrowed parameter type is the guard — a caller that adds a third shape has
+   * to decide which path it belongs on rather than getting the buffering one by
+   * default.
+   * @param content - Content to convert.
+   * @returns The bytes.
    */
-  private async toBuffer(
-    content: Buffer | string | ReadableStream,
-  ): Promise<Buffer> {
-    if (Buffer.isBuffer(content)) {
-      return content;
-    }
-
-    if (typeof content === 'string') {
-      return Buffer.from(content, 'utf8');
-    }
-
-    // Handle ReadableStream
-    const reader = content.getReader();
-    const chunks: Uint8Array[] = [];
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-    }
-
-    return Buffer.concat(chunks);
+  private toBuffer(content: Buffer | string): Buffer {
+    return Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
   }
 
   /**
@@ -153,7 +150,14 @@ export class BsFs implements Bs {
   async setBlob(
     content: Buffer | string | ReadableStream,
   ): Promise<BlobProperties> {
-    const buffer = await this.toBuffer(content);
+    // A stream is written through to disk rather than collected first. Reading
+    // it into a Buffer to hash it costs the whole file in RAM — twice, in fact,
+    // because `hshBuffer` copies its input into a padded working buffer — and
+    // that is the cost this class exists to avoid for large files.
+    if (content instanceof ReadableStream) {
+      return this._setBlobFromStream(content);
+    }
+    const buffer = this.toBuffer(content);
     const blobId = hshBuffer(buffer);
     const { filePath, metaPath, dir } = this.getBlobPath(blobId);
 
@@ -190,6 +194,111 @@ export class BsFs implements Bs {
     };
 
     await this.atomicWrite(metaPath, JSON.stringify(metadata, null, 2));
+
+    return properties;
+  }
+
+  /**
+   * Stores a blob from a stream, holding one chunk at a time.
+   *
+   * ## Why this cannot simply hash and then write
+   *
+   * The store is content-addressed: the path a blob belongs at is derived from
+   * its own hash, so the destination is unknown until the last byte has been
+   * read. The bytes therefore land in a temp file while a running SHA-256
+   * consumes them, and the finished digest decides where that file is moved.
+   *
+   * The digest is Node's incremental one rather than {@link hshBuffer}, which
+   * takes a whole Buffer. They agree exactly — SHA-256 in base64url, truncated
+   * to {@link _HASH_LENGTH} — verified across the block boundaries where a
+   * padding mistake would show (55, 56, 63, 64, 65 bytes) and across split
+   * feeds. They have to agree: a blob stored under a different id than the
+   * buffer path would give it is a blob that deduplication can never find and
+   * that every existing reference misses.
+   * @param content - The stream to store.
+   * @returns Properties of the stored blob.
+   */
+  private async _setBlobFromStream(
+    content: ReadableStream,
+  ): Promise<BlobProperties> {
+    await this.ensureDir(this.baseDir);
+    const tmp = join(
+      this.baseDir,
+      `.incoming-${Date.now().toString(36)}-${Math.floor(
+        Math.random() * 1e9,
+      ).toString(36)}.tmp`,
+    );
+
+    const digest = createHash('sha256');
+    let size = 0;
+    const handle = await open(tmp, 'w');
+    try {
+      const reader = content.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        digest.update(value);
+        size += value.length;
+        await handle.write(value);
+      }
+    } finally {
+      await handle.close();
+    }
+
+    const blobId = digest.digest('base64url').slice(0, _HASH_LENGTH);
+    const { filePath, metaPath, dir } = this.getBlobPath(blobId);
+
+    // Deduplication, same rule as the buffer path — but the staged file has to
+    // be cleaned up either way, or every re-send of an existing blob leaves a
+    // copy of it behind.
+    try {
+      await access(filePath);
+      await rm(tmp, { force: true });
+      const metaContent = await readFile(metaPath, 'utf8');
+      const metadata: StoredMetadata = JSON.parse(metaContent);
+      return {
+        blobId: metadata.blobId,
+        size: metadata.size,
+        createdAt: new Date(metadata.createdAt),
+      };
+    } catch {
+      // Not stored yet — fall through and move the staged file into place.
+    }
+
+    await this.ensureDir(dir);
+    try {
+      await rename(tmp, filePath);
+    } catch (err) {
+      /* v8 ignore start -- @preserve: same content-addressed race as
+         `atomicWrite`. A concurrent writer landing identical bytes first makes
+         this rename fail (EPERM on Windows); if the target exists now, the
+         write already succeeded. Not deterministically forceable. */
+      await rm(tmp, { force: true }).catch(() => {});
+      try {
+        await access(filePath);
+      } catch {
+        throw err;
+      }
+      /* v8 ignore stop */
+    }
+
+    const properties: BlobProperties = {
+      blobId,
+      size,
+      createdAt: new Date(),
+    };
+    await this.atomicWrite(
+      metaPath,
+      JSON.stringify(
+        {
+          blobId: properties.blobId,
+          size: properties.size,
+          createdAt: properties.createdAt.toISOString(),
+        } satisfies StoredMetadata,
+        null,
+        2,
+      ),
+    );
 
     return properties;
   }

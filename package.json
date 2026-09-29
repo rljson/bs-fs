@@ -1,6 +1,6 @@
 {
   "name": "@rljson/bs-fs",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Rljson bs-fs description",
   "homepage": "https://github.com/rljson/bs-fs",
   "bugs": "https://github.com/rljson/bs-fs/issues",
@@ -50,7 +50,7 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "0.0.26",
+    "@rljson/bs": "0.0.27",
     "@rljson/hash": "0.0.19",
     "@rljson/json": "0.0.23",
     "@rljson/rljson": "0.0.81"
