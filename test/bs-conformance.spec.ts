@@ -269,6 +269,32 @@ export const runBsConformanceTests = (
             bs.getBlobStream('nonexistent1234567890'),
           ).rejects.toThrow('Blob not found');
         });
+
+        it('delivers a multi-chunk blob whole and in order', async () => {
+          // Every implementation hands the stream out in pieces — a disk read
+          // in 64 kB chunks, a peer in ranged pulls — and the one bug they can
+          // all have is a piece lost, repeated or out of order. A 200 kB blob
+          // crosses several boundaries on every backend; a nineteen-byte one
+          // crosses none, which is why the test above cannot see this.
+          const size = 200 * 1024;
+          const content = Buffer.alloc(size);
+          // A per-position pattern, so a duplicated or reordered chunk shows as
+          // a mismatch rather than as more of the same byte.
+          for (let i = 0; i < size; i++) content[i] = i % 251;
+          const { blobId } = await bs.setBlob(content);
+
+          const reader = (await bs.getBlobStream(blobId)).getReader();
+          const chunks: Uint8Array[] = [];
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+          }
+
+          const joined = Buffer.concat(chunks);
+          expect(joined).toHaveLength(size);
+          expect(joined.equals(content)).toBe(true);
+        });
       });
 
       describe('deleteBlob', () => {
