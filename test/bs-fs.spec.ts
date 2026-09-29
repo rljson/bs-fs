@@ -23,6 +23,93 @@ describe('BsFs', () => {
     await bs.clear();
   });
 
+  describe('setBlob from a stream', () => {
+    /** A web stream over `bufs`, the shape `setBlob` takes. */
+    const streamOf = (bufs: Buffer[]): ReadableStream =>
+      new ReadableStream({
+        start(controller) {
+          for (const b of bufs) controller.enqueue(new Uint8Array(b));
+          controller.close();
+        },
+      });
+
+    it('gives a stream the SAME blobId as the equivalent buffer', async () => {
+      // The one thing that must never drift. The streaming path computes its
+      // own digest incrementally instead of calling `hshBuffer` on a whole
+      // Buffer, and a blob stored under a different id is a blob that
+      // deduplication can never find and that every existing reference misses.
+      const content = Buffer.from('the same bytes, either way');
+      const viaBuffer = await bs.setBlob(content);
+      await bs.clear();
+      // Split across chunks on purpose: an incremental digest that mishandled a
+      // feed boundary would still agree on a single-chunk stream.
+      const viaStream = await bs.setBlob(
+        streamOf([content.subarray(0, 7), content.subarray(7)]),
+      );
+
+      expect(viaStream.blobId).toBe(viaBuffer.blobId);
+      expect(viaStream.size).toBe(content.length);
+    });
+
+    it('agrees with the buffer path at every SHA block boundary', async () => {
+      // 64 bytes is a SHA-256 block, and 55/56 straddle the point where the
+      // length padding needs an extra block. A padding mistake in the
+      // incremental digest shows here and nowhere else.
+      for (const size of [0, 1, 55, 56, 63, 64, 65, 200]) {
+        const content = Buffer.alloc(size);
+        for (let i = 0; i < size; i++) content[i] = (i * 7) % 256;
+        const viaBuffer = await bs.setBlob(content);
+        await bs.clear();
+        const viaStream = await bs.setBlob(streamOf([content]));
+        expect(viaStream.blobId, `size ${String(size)}`).toBe(viaBuffer.blobId);
+        await bs.clear();
+      }
+    });
+
+    it('reads back exactly what was streamed in', async () => {
+      const content = Buffer.alloc(300 * 1024);
+      for (let i = 0; i < content.length; i++) content[i] = i % 251;
+      const chunks: Buffer[] = [];
+      for (let at = 0; at < content.length; at += 64 * 1024) {
+        chunks.push(content.subarray(at, at + 64 * 1024));
+      }
+
+      const { blobId } = await bs.setBlob(streamOf(chunks));
+      const { content: back } = await bs.getBlob(blobId);
+      expect(back.equals(content)).toBe(true);
+    });
+
+    it('deduplicates a stream against an already stored blob', async () => {
+      const content = Buffer.from('stored once');
+      const first = await bs.setBlob(content);
+      const again = await bs.setBlob(streamOf([content]));
+
+      expect(again.blobId).toBe(first.blobId);
+      expect(again.size).toBe(first.size);
+      expect(again.createdAt.getTime()).toBe(first.createdAt.getTime());
+    });
+
+    it('leaves no staged file behind, stored or deduplicated', async () => {
+      // The temp file is written before the id is known, so both outcomes have
+      // to clean up after themselves. A re-send of an existing blob taking the
+      // dedup path used to be the one that could leak a full copy of the file.
+      const content = Buffer.from('twice over');
+      await bs.setBlob(streamOf([content]));
+      await bs.setBlob(streamOf([content]));
+
+      const { readdir } = await import('node:fs/promises');
+      const entries = await readdir(testDir);
+      expect(entries.filter((e) => e.endsWith('.tmp'))).toEqual([]);
+    });
+
+    it('stores an empty stream', async () => {
+      const props = await bs.setBlob(streamOf([]));
+      expect(props.size).toBe(0);
+      const { content } = await bs.getBlob(props.blobId);
+      expect(content).toHaveLength(0);
+    });
+  });
+
   describe('setBlob', () => {
     it('should store a blob from string content', async () => {
       const content = 'Hello, World!';
