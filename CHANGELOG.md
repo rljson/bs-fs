@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Developed in gg tickets
+
+- **Developed in gg tickets.** The repo carries the rljson DNA (`@rljson/dna-rljson`): gg's `/gg-*` skills, the guides and the quick check (`.github/workflows/quick_check.yaml`).
+- **Pull requests are checked by the quick check** (`gg one did commit`: every commit went through gg's local lint, tests and coverage). `Build and Test` runs on `main` after the merge.
+- **`install-conformance-tests.js`** takes the conformance tests from a linked sibling checkout, which has no `dist/`, by running that checkout's `deploy-conformance-tests.js`.
+- **`tsconfig.json` lists `node` in `types`:** TypeScript 6 includes no `@types` by default.
+- **vitest also runs `test/**/*.test.ts`,** where gg's release writes the version test.
+- **Dependencies raised to their newest versions** (TypeScript 6 among them).
+
 ### Releases go through gg
 
 **What changed for contributors.** The CI no longer publishes:
