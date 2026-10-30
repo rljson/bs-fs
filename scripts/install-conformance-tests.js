@@ -7,7 +7,8 @@
  */
 
 // Create a folder dist/conformance-tests if it does not exist
-import { existsSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync, lstatSync, realpathSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { blue, gray, green, red, yellow } from './functions/colors.js';
@@ -40,13 +41,22 @@ async function _copyConformanceTests(srcDir) {
 
 // .............................................................................
 async function _srcDir() {
-  const targetDir = path.join(
-    nodeModulesDir,
-    '@rljson',
-    'bs',
-    'dist',
-    'conformance-tests',
-  );
+  const packageDir = path.join(nodeModulesDir, '@rljson', 'bs');
+
+  // In a gg ticket, @rljson/bs links the sources of its sibling checkout,
+  // which has no dist/. Let the sibling deploy its conformance tests and
+  // take them from there.
+  const srcLink = path.join(packageDir, 'src');
+  if (existsSync(srcLink) && lstatSync(srcLink).isSymbolicLink()) {
+    const siblingDir = path.dirname(realpathSync(srcLink));
+    execFileSync('node', ['scripts/deploy-conformance-tests.js'], {
+      cwd: siblingDir,
+      stdio: 'inherit',
+    });
+    return path.join(siblingDir, 'dist', 'conformance-tests');
+  }
+
+  const targetDir = path.join(packageDir, 'dist', 'conformance-tests');
   if (!existsSync(targetDir)) {
     await fs.mkdir(targetDir, { recursive: true });
   }
