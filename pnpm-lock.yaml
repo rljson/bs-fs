@@ -4,13 +4,16 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@rljson/bs': link:./.gg/ts_links/@rljson/bs
+
 importers:
 
   .:
     dependencies:
       '@rljson/bs':
-        specifier: 0.0.32
-        version: 0.0.32
+        specifier: link:.gg/ts_links/@rljson/bs
+        version: link:.gg/ts_links/@rljson/bs
       '@rljson/hash':
         specifier: 0.0.21
         version: 0.0.21
@@ -439,10 +442,6 @@ packages:
 
   '@oxc-project/types@0.156.0':
     resolution: {integrity: sha512-1Duyg48TdJNdyhEB8Xn1L36bT9Pv6GUtlKjHxOys8xkaF/rQq3XJE+bAurSK/AgIz5mGFsb77cn9Pb20+WCScw==}
-
-  '@rljson/bs@0.0.32':
-    resolution: {integrity: sha512-EdvgaYLIVfVyY8KDdecBEe5bBnsJU+o1d1ArncEgsi9gFjfl53wl4UOeszeLyoG4wL2gu+w3QhWXrn3d9EwDEQ==}
-    engines: {node: '>=22.14.0'}
 
   '@rljson/dna-rljson@0.3.2':
     resolution: {integrity: sha512-WYR1D9xY3QtsPlm+yvVFnbIBo6eK5+H9WbKVPu3dQnOAHM5W2ZevfHCaCtqYOsM0VeubotvgMbbFSiT4EXrAIw==}
@@ -2263,12 +2262,6 @@ snapshots:
   '@microsoft/tsdoc@0.17.1': {}
 
   '@oxc-project/types@0.156.0': {}
-
-  '@rljson/bs@0.0.32':
-    dependencies:
-      '@rljson/hash': 0.0.21
-      '@rljson/json': 0.0.23
-      '@rljson/rljson': 0.0.89
 
   '@rljson/dna-rljson@0.3.2':
     dependencies:
