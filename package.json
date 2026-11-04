@@ -37,7 +37,7 @@
     "@vitest/coverage-v8": "^5.1.0",
     "cross-env": "^10.1.0",
     "eslint": "^10.14.0",
-    "eslint-plugin-jsdoc": "^65.4.2",
+    "eslint-plugin-jsdoc": "^65.4.3",
     "eslint-plugin-tsdoc": "^0.5.4",
     "globals": "^17.14.0",
     "jsdoc": "^4.0.5",
@@ -52,7 +52,7 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "0.0.32",
+    "@rljson/bs": "0.1.1",
     "@rljson/hash": "0.0.21",
     "@rljson/json": "0.0.23",
     "@rljson/rljson": "0.0.89"
