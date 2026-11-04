@@ -25,7 +25,7 @@ import {
   it,
 } from 'vitest';
 
-import { Bs, BsTestSetup } from '@rljson/bs';
+import { BLOCK_MAX_BYTES, Bs, BsTestSetup, ContentId } from '@rljson/bs';
 
 import { testSetup } from './bs-conformance.setup.ts';
 import { expectGolden, ExpectGoldenOptions } from './setup/goldens.ts';
@@ -546,6 +546,155 @@ export const runBsConformanceTests = (
             result as any,
           );
         });
+      });
+    });
+
+    describe('blocks', () => {
+      /** Bytes that do not repeat, the same for the same seed. */
+      const noise = (size: number, seed: number): Buffer => {
+        const bytes = Buffer.alloc(size);
+        let x = seed;
+        for (let i = 0; i < size; i++) {
+          x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+          bytes[i] = x >>> 24;
+        }
+        return bytes;
+      };
+
+      const readAll = async (stream: ReadableStream<Uint8Array>) => {
+        const parts: Uint8Array[] = [];
+        const reader = stream.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return Buffer.concat(parts);
+          parts.push(value);
+        }
+      };
+
+      const large = noise(6 * 1024 * 1024, 11);
+
+      it('stores a large blob as blocks whose sizes add up to the blob', async () => {
+        const { blobId, size } = await bs.setBlob(large);
+        expect(size).toBe(large.length);
+        const blocks = await bs.getBlobBlocks(blobId);
+        expect(blocks.length).toBeGreaterThan(1);
+        expect(blocks.reduce((sum, b) => sum + b.size, 0)).toBe(large.length);
+        for (const block of blocks) {
+          expect(block.size).toBeLessThanOrEqual(BLOCK_MAX_BYTES);
+          expect(await bs.blockExists(block.blockId)).toBe(true);
+          expect(ContentId.of(await bs.getBlock(block.blockId))).toBe(
+            block.blockId,
+          );
+        }
+      });
+
+      it('reads a large blob back whole, in ranges and as a stream', async () => {
+        const { blobId } = await bs.setBlob(large);
+        expect((await bs.getBlob(blobId)).content.equals(large)).toBe(true);
+        const start = 1024 * 1024 - 10;
+        const end = 3 * 1024 * 1024 + 10;
+        expect(
+          (await bs.getBlob(blobId, { range: { start, end } })).content.equals(
+            large.subarray(start, end),
+          ),
+        ).toBe(true);
+        expect(
+          (await readAll(await bs.getBlobStream(blobId))).equals(large),
+        ).toBe(true);
+      });
+
+      it('gives a stream the blob id of the same bytes in a buffer', async () => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (let i = 0; i < large.length; i += 100_000) {
+              controller.enqueue(
+                new Uint8Array(large.subarray(i, i + 100_000)),
+              );
+            }
+            controller.close();
+          },
+        });
+        const fromStream = await bs.setBlob(stream);
+        expect(fromStream.blobId).toBe(ContentId.of(large));
+        expect(await bs.getBlobBlocks(fromStream.blobId)).toEqual(
+          await bs.getBlobBlocks((await bs.setBlob(large)).blobId),
+        );
+      });
+
+      it('stores the blocks two versions share once', async () => {
+        const v1 = await bs.setBlob(large);
+        const changed = Buffer.from(large);
+        changed[large.length / 2] ^= 0xff;
+        const v2 = await bs.setBlob(changed);
+        const blocks1 = await bs.getBlobBlocks(v1.blobId);
+        const blocks2 = await bs.getBlobBlocks(v2.blobId);
+        const ids1 = new Set(blocks1.map((b) => b.blockId));
+        const fresh = blocks2.filter((b) => !ids1.has(b.blockId));
+        expect(fresh.length).toBeGreaterThan(0);
+        expect(fresh.length).toBeLessThanOrEqual(2);
+      });
+
+      it('stores an empty blob without blocks', async () => {
+        const { blobId, size } = await bs.setBlob(Buffer.alloc(0));
+        expect(size).toBe(0);
+        expect(await bs.getBlobBlocks(blobId)).toEqual([]);
+        expect((await bs.getBlob(blobId)).content.length).toBe(0);
+        expect((await readAll(await bs.getBlobStream(blobId))).length).toBe(0);
+      });
+
+      it('stores a blob from blocks it holds', async () => {
+        const a = await bs.setBlock(Buffer.from('first half, '));
+        const b = await bs.setBlock(Buffer.from('second half'));
+        expect(a).toEqual({
+          blockId: ContentId.of(Buffer.from('first half, ')),
+          size: 12,
+        });
+        const blobId = ContentId.of(Buffer.from('first half, second half'));
+
+        const properties = await bs.setBlobBlocks(blobId, [a, b]);
+        expect(properties.blobId).toBe(blobId);
+        expect(properties.size).toBe(23);
+        expect((await bs.getBlob(blobId)).content.toString()).toBe(
+          'first half, second half',
+        );
+        expect(await bs.getBlobBlocks(blobId)).toEqual([a, b]);
+
+        // Stored already: the stored blob is answered.
+        expect((await bs.setBlobBlocks(blobId, [a, b])).blobId).toBe(blobId);
+      });
+
+      it('refuses blocks that do not make the blob', async () => {
+        const a = await bs.setBlock(Buffer.from('some bytes'));
+        await expect(bs.setBlobBlocks('not-their-hash', [a])).rejects.toThrow(
+          "Blocks of blob 'not-their-hash' make",
+        );
+        expect(await bs.blobExists('not-their-hash')).toBe(false);
+      });
+
+      it('refuses a blob whose blocks it lacks', async () => {
+        await expect(
+          bs.setBlobBlocks('some-blob', [
+            { blockId: 'missing-block', size: 3 },
+          ]),
+        ).rejects.toThrow('Block not found: missing-block');
+      });
+
+      it('reports a missing block', async () => {
+        expect(await bs.blockExists('missing-block')).toBe(false);
+        await expect(bs.getBlock('missing-block')).rejects.toThrow(
+          'Block not found: missing-block',
+        );
+        await expect(bs.getBlobBlocks('missing-blob')).rejects.toThrow(
+          'Blob not found: missing-blob',
+        );
+      });
+
+      it('keeps the blocks of a deleted blob', async () => {
+        const { blobId } = await bs.setBlob('deleted, blocks kept');
+        const [{ blockId }] = await bs.getBlobBlocks(blobId);
+        await bs.deleteBlob(blobId);
+        expect(await bs.blobExists(blobId)).toBe(false);
+        expect(await bs.blockExists(blockId)).toBe(true);
       });
     });
   });
