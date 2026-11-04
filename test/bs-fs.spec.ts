@@ -4,7 +4,7 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -13,6 +13,15 @@ import { BsFs } from '../src/bs-fs.ts';
 describe('BsFs', () => {
   let bs: BsFs;
   const testDir = './test-bs-fs';
+
+  /** Where a block's or a blob's file lies. */
+  const pathOf = (kind: string, id: string, extension: string) =>
+    join(
+      testDir,
+      kind,
+      ...[0, 2, 4, 6].map((i) => id.substring(i, i + 2)),
+      `${id}${extension}`,
+    );
 
   beforeEach(async () => {
     bs = new BsFs(testDir);
@@ -98,7 +107,7 @@ describe('BsFs', () => {
       await bs.setBlob(streamOf([content]));
 
       const { readdir } = await import('node:fs/promises');
-      const entries = await readdir(testDir);
+      const entries = await readdir(testDir, { recursive: true });
       expect(entries.filter((e) => e.endsWith('.tmp'))).toEqual([]);
     });
 
@@ -157,22 +166,16 @@ describe('BsFs', () => {
     it('should create proper directory structure', async () => {
       const content = 'Test directory structure';
       const props = await bs.setBlob(content);
+      const [{ blockId }] = await bs.getBlobBlocks(props.blobId);
 
-      // Verify that subdirectories are created (first 8 chars, 2 at a time)
-      const subDirs = [];
-      for (let i = 0; i < Math.min(props.blobId.length, 8); i += 2) {
-        if (i + 2 <= props.blobId.length) {
-          subDirs.push(props.blobId.substring(i, i + 2));
-        }
-      }
-
-      const expectedDir = join(testDir, ...subDirs);
-      const expectedFile = join(expectedDir, `${props.blobId}.txt`);
-      const expectedMeta = join(expectedDir, `${props.blobId}.meta.json`);
-
-      // Check files exist
-      await expect(access(expectedFile)).resolves.toBeUndefined();
-      await expect(access(expectedMeta)).resolves.toBeUndefined();
+      // A blob's file under blobs/, each block's under blocks/, both in
+      // subdirectories from the first 8 chars of the id, 2 at a time
+      await expect(
+        access(pathOf('blobs', props.blobId, '.json')),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(pathOf('blocks', blockId, '')),
+      ).resolves.toBeUndefined();
     });
 
     it('should handle empty content', async () => {
@@ -294,29 +297,20 @@ describe('BsFs', () => {
       );
     });
 
-    it('should remove both content and metadata files', async () => {
+    it('should remove the blob file and keep its blocks', async () => {
       const content = 'Delete test';
       const props = await bs.setBlob(content);
+      const [{ blockId }] = await bs.getBlobBlocks(props.blobId);
+      const blobPath = pathOf('blobs', props.blobId, '.json');
+      const blockPath = pathOf('blocks', blockId, '');
 
-      // Verify files exist before deletion
-      const subDirs = [];
-      for (let i = 0; i < Math.min(props.blobId.length, 8); i += 2) {
-        if (i + 2 <= props.blobId.length) {
-          subDirs.push(props.blobId.substring(i, i + 2));
-        }
-      }
-      const dir = join(testDir, ...subDirs);
-      const filePath = join(dir, `${props.blobId}.txt`);
-      const metaPath = join(dir, `${props.blobId}.meta.json`);
-
-      await expect(access(filePath)).resolves.toBeUndefined();
-      await expect(access(metaPath)).resolves.toBeUndefined();
+      await expect(access(blobPath)).resolves.toBeUndefined();
 
       await bs.deleteBlob(props.blobId);
 
-      // Verify files are deleted
-      await expect(access(filePath)).rejects.toThrow();
-      await expect(access(metaPath)).rejects.toThrow();
+      // The blob is gone; its block stays, other blobs may contain it
+      await expect(access(blobPath)).rejects.toThrow();
+      await expect(access(blockPath)).resolves.toBeUndefined();
     });
   });
 
@@ -540,22 +534,53 @@ describe('BsFs', () => {
       const content = 'Metadata test';
       const props = await bs.setBlob(content);
 
-      // Read metadata file directly
-      const subDirs = [];
-      for (let i = 0; i < Math.min(props.blobId.length, 8); i += 2) {
-        if (i + 2 <= props.blobId.length) {
-          subDirs.push(props.blobId.substring(i, i + 2));
-        }
-      }
-      const metaPath = join(testDir, ...subDirs, `${props.blobId}.meta.json`);
-
-      const metaContent = await readFile(metaPath, 'utf8');
-      const metadata = JSON.parse(metaContent);
+      // Read the blob file directly
+      const metadata = JSON.parse(
+        await readFile(pathOf('blobs', props.blobId, '.json'), 'utf8'),
+      );
 
       expect(metadata.blobId).toBe(props.blobId);
       expect(metadata.size).toBe(props.size);
-      expect(metadata.createdAt).toBeDefined();
-      expect(new Date(metadata.createdAt)).toBeInstanceOf(Date);
+      expect(metadata.blocks).toEqual(await bs.getBlobBlocks(props.blobId));
+      expect(new Date(metadata.createdAt).getTime()).toBe(
+        props.createdAt.getTime(),
+      );
+    });
+
+    it('skips a blob file it cannot read, and staged files', async () => {
+      const props = await bs.setBlob('Readable');
+      await writeFile(join(testDir, 'blobs', 'broken.json'), '{');
+      await writeFile(join(testDir, 'blobs', 'staged.json.x.tmp'), '{}');
+      expect((await bs.listBlobs()).blobs.map((b) => b.blobId)).toEqual([
+        props.blobId,
+      ]);
+    });
+  });
+
+  describe('removeOldLayout', () => {
+    it('deletes the directories of the layout before blocks, and nothing else', async () => {
+      const { blobId } = await bs.setBlob('kept');
+      // The layout before blocks: ab/cd/ef/gh/<id>.txt and <id>.meta.json
+      const oldDir = join(testDir, 'ab', 'cd', 'ef', 'gh');
+      await mkdir(oldDir, { recursive: true });
+      await writeFile(join(oldDir, 'abcdefgh.txt'), 'old');
+      await writeFile(join(oldDir, 'abcdefgh.meta.json'), '{}');
+      await mkdir(join(testDir, 'Zz'), { recursive: true });
+      // Kept beside the store by its user
+      await writeFile(join(testDir, 'db.sqlite'), 'db');
+      await writeFile(join(testDir, 'xy'), 'a file, not a directory');
+
+      expect(await bs.removeOldLayout()).toBe(2);
+
+      expect((await readdir(testDir)).sort()).toEqual(
+        ['blobs', 'blocks', 'db.sqlite', 'xy'].sort(),
+      );
+      expect((await bs.getBlob(blobId)).content.toString()).toBe('kept');
+      expect(await bs.removeOldLayout()).toBe(0);
+    });
+
+    it('deletes nothing when the base directory does not exist', async () => {
+      expect(await new BsFs('./test-bs-fs-missing').removeOldLayout()).toBe(0);
     });
   });
 

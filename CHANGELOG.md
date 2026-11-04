@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Blobs are stored as blocks — breaking
+
+- **New layout.** `blocks/` holds each block once (`ab/cd/ef/gh/<blockId>`),
+  `blobs/` holds each blob as a JSON file with its properties and its block
+  list. Two versions of a file that share most of their bytes share most of
+  their blocks on disk.
+- **The block calls of `Bs`:** `getBlobBlocks`, `getBlock`, `blockExists`,
+  `setBlock`, `setBlobBlocks`. A stream is cut into blocks as it arrives and
+  never held whole.
+- **`deleteBlob` deletes the blob's file;** its blocks stay, other blobs may
+  contain them.
+- **`removeOldLayout()`** deletes what the layout before blocks left in the
+  base directory — one file per blob, in directories of two characters — which
+  this version cannot read. Everything else in the base directory stays.
+
 ### CLAUDE.md keeps this repo's own rules
 
 - The rules every rljson repo shares (coverage, pinning, docs, releases,

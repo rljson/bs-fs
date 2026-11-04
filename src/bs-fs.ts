@@ -4,14 +4,24 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { hshBuffer } from '@rljson/hash';
+import {
+  type BlobBlock,
+  type BlobProperties,
+  type Bs,
+  ContentId,
+  type DownloadBlobOptions,
+  type ListBlobsOptions,
+  type ListBlobsResult,
+  readBlocks,
+  streamBlocks,
+  verifyBlob,
+  writeBlocks,
+} from '@rljson/bs';
 
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import {
   access,
   mkdir,
-  open,
   readdir,
   readFile,
   rename,
@@ -19,36 +29,26 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { join } from 'node:path';
-import { Readable } from 'node:stream';
+import { dirname, join } from 'node:path';
 
-import type {
-  BlobProperties,
-  Bs,
-  DownloadBlobOptions,
-  ListBlobsOptions,
-  ListBlobsResult,
-} from '@rljson/bs';
-
-/**
- * Characters of the base64url digest that make a blobId.
- *
- * Fixed by `@rljson/hash`'s default `hashLength`, and repeated here because the
- * streaming write computes its digest itself. A mismatch would store a blob
- * under an id nothing else in the system would look for.
- */
-const _HASH_LENGTH = 22;
-
-interface StoredMetadata {
+/** What a blob's file holds: its properties and its blocks. */
+interface StoredBlob {
   blobId: string;
   size: number;
   createdAt: string;
+  blocks: BlobBlock[];
 }
 
 /**
  * Filesystem-based implementation of content-addressable blob storage.
- * All blobs are stored on the filesystem in a hierarchical directory structure.
- * Useful for persistent storage and production use.
+ *
+ * Every blob is stored as blocks (see `@rljson/bs`): each block once, in a
+ * file of its own under `blocks/`, and each blob as a small JSON file under
+ * `blobs/` that lists its blocks. Two versions of a file that share most of
+ * their bytes therefore share most of their blocks on disk.
+ *
+ * Deleting a blob deletes its JSON file only. Its blocks stay: other blobs
+ * may contain them.
  */
 export class BsFs implements Bs {
   private readonly baseDir: string;
@@ -67,58 +67,62 @@ export class BsFs implements Bs {
   }
 
   /**
-   * Convert content to Buffer.
-   *
-   * No stream case: a stream never reaches here, because collecting one into a
-   * Buffer is the cost {@link BsFs._setBlobFromStream} exists to avoid. The
-   * narrowed parameter type is the guard — a caller that adds a third shape has
-   * to decide which path it belongs on rather than getting the buffering one by
-   * default.
-   * @param content - Content to convert.
-   * @returns The bytes.
+   * The path of a block or a blob file. Subdirectories from the first eight
+   * characters of the id, two each: `ab/cd/ef/gh/abcdefgh…`.
+   * @param kind - `blocks` or `blobs`.
+   * @param id - The block's or the blob's id.
+   * @param extension - Appended to the file name.
+   * @returns The path.
    */
-  private toBuffer(content: Buffer | string): Buffer {
-    return Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-  }
-
-  /**
-   * Generate file path and directory structure for a blobId
-   * Creates subdirectories using every two letters from blobId
-   * Example: abc123def456 -\> blobs/ab/c1/23/de/abc123def456.txt
-   * @param blobId - Hex blob id
-   */
-  private getBlobPath(blobId: string): {
-    filePath: string;
-    metaPath: string;
-    dir: string;
-  } {
+  private _path(
+    kind: 'blocks' | 'blobs',
+    id: string,
+    extension: string,
+  ): string {
     const subDirs: string[] = [];
-
-    // Create subdirectories from every two letters
-    for (let i = 0; i + 2 <= Math.min(blobId.length, 8); i += 2) {
-      subDirs.push(blobId.substring(i, i + 2));
+    for (let i = 0; i + 2 <= Math.min(id.length, 8); i += 2) {
+      subDirs.push(id.substring(i, i + 2));
     }
-
-    const dir = join(this.baseDir, ...subDirs);
-    const filePath = join(dir, `${blobId}.txt`);
-    const metaPath = join(dir, `${blobId}.meta.json`);
-
-    return { filePath, metaPath, dir };
+    return join(this.baseDir, kind, ...subDirs, `${id}${extension}`);
   }
 
   /**
-   * Ensure directory exists
-   * @param dir - Absolute or relative directory path
+   * The path of a block's file.
+   * @param blockId - The block.
+   * @returns The path.
    */
-  private async ensureDir(dir: string): Promise<void> {
-    await mkdir(dir, { recursive: true });
+  private _blockPath(blockId: string): string {
+    return this._path('blocks', blockId, '');
+  }
+
+  /**
+   * The path of a blob's file.
+   * @param blobId - The blob.
+   * @returns The path.
+   */
+  private _blobPath(blobId: string): string {
+    return this._path('blobs', blobId, '.json');
+  }
+
+  /**
+   * Whether a file exists.
+   * @param path - The file.
+   * @returns True if it exists.
+   */
+  private async _exists(path: string): Promise<boolean> {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Write `data` to `path` atomically: stage in a sibling temp file, then rename
    * over the target. A crash mid-write can never leave a half-written (and thus
-   * hash-mismatched) blob or a truncated metadata file. `.tmp` files are ignored
-   * by {@link findAllBlobs} (it only reads `*.meta.json`).
+   * hash-mismatched) block or a truncated blob file. `.tmp` files are ignored
+   * by {@link findAllBlobs} (it only reads `*.json`).
    * @param path - Final destination path.
    * @param data - Bytes/string to write.
    */
@@ -126,6 +130,7 @@ export class BsFs implements Bs {
     path: string,
     data: Buffer | string,
   ): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
     const tmp = `${path}.${Date.now().toString(36)}-${Math.floor(
       Math.random() * 1e9,
     ).toString(36)}.tmp`;
@@ -147,269 +152,207 @@ export class BsFs implements Bs {
     }
   }
 
-  async setBlob(
-    content: Buffer | string | ReadableStream,
-  ): Promise<BlobProperties> {
-    // A stream is written through to disk rather than collected first. Reading
-    // it into a Buffer to hash it costs the whole file in RAM — twice, in fact,
-    // because `hshBuffer` copies its input into a padded working buffer — and
-    // that is the cost this class exists to avoid for large files.
-    if (content instanceof ReadableStream) {
-      return this._setBlobFromStream(content);
-    }
-    const buffer = this.toBuffer(content);
-    const blobId = hshBuffer(buffer);
-    const { filePath, metaPath, dir } = this.getBlobPath(blobId);
-
-    // Check if blob already exists (deduplication)
-    try {
-      await access(filePath);
-      // Blob exists, read and return existing properties
-      const metaContent = await readFile(metaPath, 'utf8');
-      const metadata: StoredMetadata = JSON.parse(metaContent);
-      return {
-        blobId: metadata.blobId,
-        size: metadata.size,
-        createdAt: new Date(metadata.createdAt),
-      };
-    } catch {
-      // Blob doesn't exist, create it
-    }
-
-    // Store new blob atomically (temp + rename) so a crash never leaves a
-    // partial blob or metadata file.
-    await this.ensureDir(dir);
-    await this.atomicWrite(filePath, buffer);
-
-    const properties: BlobProperties = {
-      blobId,
-      size: buffer.length,
-      createdAt: new Date(),
-    };
-
-    const metadata: StoredMetadata = {
-      blobId: properties.blobId,
-      size: properties.size,
-      createdAt: properties.createdAt.toISOString(),
-    };
-
-    await this.atomicWrite(metaPath, JSON.stringify(metadata, null, 2));
-
-    return properties;
+  /**
+   * Stores a block unless it is stored already.
+   * @param blockId - The block's id, the hash of `bytes`.
+   * @param bytes - Its bytes.
+   */
+  private async _putBlock(blockId: string, bytes: Buffer): Promise<void> {
+    const path = this._blockPath(blockId);
+    if (!(await this._exists(path))) await this.atomicWrite(path, bytes);
   }
 
   /**
-   * Stores a blob from a stream, holding one chunk at a time.
-   *
-   * ## Why this cannot simply hash and then write
-   *
-   * The store is content-addressed: the path a blob belongs at is derived from
-   * its own hash, so the destination is unknown until the last byte has been
-   * read. The bytes therefore land in a temp file while a running SHA-256
-   * consumes them, and the finished digest decides where that file is moved.
-   *
-   * The digest is Node's incremental one rather than {@link hshBuffer}, which
-   * takes a whole Buffer. They agree exactly — SHA-256 in base64url, truncated
-   * to {@link _HASH_LENGTH} — verified across the block boundaries where a
-   * padding mistake would show (55, 56, 63, 64, 65 bytes) and across split
-   * feeds. They have to agree: a blob stored under a different id than the
-   * buffer path would give it is a blob that deduplication can never find and
-   * that every existing reference misses.
-   * @param content - The stream to store.
-   * @returns Properties of the stored blob.
+   * Reads a block.
+   * @param blockId - The block.
+   * @returns Its bytes.
    */
-  private async _setBlobFromStream(
-    content: ReadableStream,
-  ): Promise<BlobProperties> {
-    await this.ensureDir(this.baseDir);
-    const tmp = join(
-      this.baseDir,
-      `.incoming-${Date.now().toString(36)}-${Math.floor(
-        Math.random() * 1e9,
-      ).toString(36)}.tmp`,
-    );
-
-    const digest = createHash('sha256');
-    let size = 0;
-    const handle = await open(tmp, 'w');
+  private readonly _readBlock = async (blockId: string): Promise<Buffer> => {
     try {
-      const reader = content.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        digest.update(value);
-        size += value.length;
-        await handle.write(value);
-      }
-    } finally {
-      await handle.close();
-    }
-
-    const blobId = digest.digest('base64url').slice(0, _HASH_LENGTH);
-    const { filePath, metaPath, dir } = this.getBlobPath(blobId);
-
-    // Deduplication, same rule as the buffer path — but the staged file has to
-    // be cleaned up either way, or every re-send of an existing blob leaves a
-    // copy of it behind.
-    try {
-      await access(filePath);
-      await rm(tmp, { force: true });
-      const metaContent = await readFile(metaPath, 'utf8');
-      const metadata: StoredMetadata = JSON.parse(metaContent);
-      return {
-        blobId: metadata.blobId,
-        size: metadata.size,
-        createdAt: new Date(metadata.createdAt),
-      };
+      return await readFile(this._blockPath(blockId));
     } catch {
-      // Not stored yet — fall through and move the staged file into place.
+      throw new Error(`Block not found: ${blockId}`);
     }
+  };
 
-    await this.ensureDir(dir);
+  /**
+   * Reads a blob's file.
+   * @param blobId - The blob.
+   * @returns What the file holds.
+   */
+  private async _readBlob(blobId: string): Promise<StoredBlob> {
+    let text: string;
     try {
-      await rename(tmp, filePath);
-    } catch (err) {
-      /* v8 ignore start -- @preserve: same content-addressed race as
-         `atomicWrite`. A concurrent writer landing identical bytes first makes
-         this rename fail (EPERM on Windows); if the target exists now, the
-         write already succeeded. Not deterministically forceable. */
-      await rm(tmp, { force: true }).catch(() => {});
-      try {
-        await access(filePath);
-      } catch {
-        throw err;
-      }
-      /* v8 ignore stop */
+      text = await readFile(this._blobPath(blobId), 'utf8');
+    } catch {
+      throw new Error(`Blob not found: ${blobId}`);
     }
-
-    const properties: BlobProperties = {
-      blobId,
-      size,
-      createdAt: new Date(),
-    };
-    await this.atomicWrite(
-      metaPath,
-      JSON.stringify(
-        {
-          blobId: properties.blobId,
-          size: properties.size,
-          createdAt: properties.createdAt.toISOString(),
-        } satisfies StoredMetadata,
-        null,
-        2,
-      ),
-    );
-
-    return properties;
+    return JSON.parse(text) as StoredBlob;
   }
 
+  /**
+   * The properties in a blob's file.
+   * @param stored - What the file holds.
+   * @returns The properties.
+   */
+  private static _properties(stored: StoredBlob): BlobProperties {
+    return {
+      blobId: stored.blobId,
+      size: stored.size,
+      createdAt: new Date(stored.createdAt),
+    };
+  }
+
+  /**
+   * Writes a blob's file unless the blob is stored already.
+   * @param blobId - The blob.
+   * @param size - Its size.
+   * @param blocks - Its blocks, all stored.
+   * @returns The blob's properties.
+   */
+  private async _storeBlob(
+    blobId: string,
+    size: number,
+    blocks: BlobBlock[],
+  ): Promise<BlobProperties> {
+    try {
+      return BsFs._properties(await this._readBlob(blobId));
+    } catch {
+      // Not stored yet.
+    }
+    const stored: StoredBlob = {
+      blobId,
+      size,
+      createdAt: new Date().toISOString(),
+      blocks,
+    };
+    await this.atomicWrite(this._blobPath(blobId), JSON.stringify(stored));
+    return BsFs._properties(stored);
+  }
+
+  /**
+   * Stores a blob. A stream is cut into blocks as it arrives and never held
+   * whole: at most one block and one incoming piece are in memory.
+   * @param content - The content.
+   * @returns The blob's properties.
+   */
+  async setBlob(
+    content: Buffer | string | ReadableStream,
+  ): Promise<BlobProperties> {
+    const { blobId, size, blocks } = await writeBlocks(
+      content,
+      ({ blockId }, bytes) => this._putBlock(blockId, bytes),
+    );
+    return this._storeBlob(blobId, size, blocks);
+  }
+
+  /**
+   * Reads a blob, or a range of it. A range reads only the blocks it
+   * touches.
+   * @param blobId - The blob.
+   * @param options - Download options.
+   * @returns Its content and properties.
+   */
   async getBlob(
     blobId: string,
     options?: DownloadBlobOptions,
   ): Promise<{ content: Buffer; properties: BlobProperties }> {
-    const { filePath, metaPath } = this.getBlobPath(blobId);
-
-    try {
-      await access(filePath);
-    } catch {
-      throw new Error(`Blob not found: ${blobId}`);
-    }
-
-    // Range request: read ONLY the requested window off disk instead of
-    // loading the whole (possibly multi-GB) blob into RAM just to slice it.
-    // Keeps the exclusive-end `[start, end)` semantics of `subarray(start, end)`.
-    let content: Buffer;
-    if (options?.range) {
-      const { start, end } = options.range;
-      const fh = await open(filePath, 'r');
-      try {
-        const size = (await fh.stat()).size;
-        const to = Math.min(end ?? size, size);
-        const len = Math.max(0, to - start);
-        const buf = Buffer.allocUnsafe(len);
-        if (len > 0) await fh.read(buf, 0, len, start);
-        content = buf;
-      } finally {
-        await fh.close();
-      }
-    } else {
-      content = await readFile(filePath);
-    }
-
-    // Read metadata
-    const metaContent = await readFile(metaPath, 'utf8');
-    const metadata: StoredMetadata = JSON.parse(metaContent);
-
-    const properties: BlobProperties = {
-      blobId: metadata.blobId,
-      size: metadata.size,
-      createdAt: new Date(metadata.createdAt),
-    };
-
-    return {
-      content,
-      properties,
-    };
-  }
-
-  async getBlobStream(blobId: string): Promise<ReadableStream> {
-    const { filePath } = this.getBlobPath(blobId);
-
-    try {
-      await access(filePath);
-    } catch {
-      throw new Error(`Blob not found: ${blobId}`);
-    }
-
-    // Create read stream from file
-    const nodeStream = createReadStream(filePath);
-    return Readable.toWeb(nodeStream) as ReadableStream;
-  }
-
-  async deleteBlob(blobId: string): Promise<void> {
-    const { filePath, metaPath } = this.getBlobPath(blobId);
-
-    try {
-      await access(filePath);
-    } catch {
-      throw new Error(`Blob not found: ${blobId}`);
-    }
-
-    await unlink(filePath);
-    await unlink(metaPath);
-  }
-
-  async blobExists(blobId: string): Promise<boolean> {
-    const { filePath } = this.getBlobPath(blobId);
-    try {
-      await access(filePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async getBlobProperties(blobId: string): Promise<BlobProperties> {
-    const { filePath, metaPath } = this.getBlobPath(blobId);
-
-    try {
-      await access(filePath);
-    } catch {
-      throw new Error(`Blob not found: ${blobId}`);
-    }
-
-    const metaContent = await readFile(metaPath, 'utf8');
-    const metadata: StoredMetadata = JSON.parse(metaContent);
-
-    return {
-      blobId: metadata.blobId,
-      size: metadata.size,
-      createdAt: new Date(metadata.createdAt),
-    };
+    const stored = await this._readBlob(blobId);
+    const content = await readBlocks(
+      stored.blocks,
+      this._readBlock,
+      options?.range,
+    );
+    return { content, properties: BsFs._properties(stored) };
   }
 
   /**
-   * Recursively find all blob metadata files in the storage directory
+   * Streams a blob, one block at a time.
+   * @param blobId - The blob.
+   * @returns The stream.
+   */
+  async getBlobStream(blobId: string): Promise<ReadableStream> {
+    const { blocks } = await this._readBlob(blobId);
+    return streamBlocks(blobId, blocks, this._readBlock);
+  }
+
+  /**
+   * Deletes a blob's file. Its blocks stay: other blobs may contain them.
+   * @param blobId - The blob.
+   */
+  async deleteBlob(blobId: string): Promise<void> {
+    try {
+      await unlink(this._blobPath(blobId));
+    } catch {
+      throw new Error(`Blob not found: ${blobId}`);
+    }
+  }
+
+  async blobExists(blobId: string): Promise<boolean> {
+    return this._exists(this._blobPath(blobId));
+  }
+
+  async getBlobProperties(blobId: string): Promise<BlobProperties> {
+    return BsFs._properties(await this._readBlob(blobId));
+  }
+
+  async getBlobBlocks(blobId: string): Promise<BlobBlock[]> {
+    return (await this._readBlob(blobId)).blocks;
+  }
+
+  async getBlock(blockId: string): Promise<Buffer> {
+    return this._readBlock(blockId);
+  }
+
+  async blockExists(blockId: string): Promise<boolean> {
+    return this._exists(this._blockPath(blockId));
+  }
+
+  async setBlock(content: Buffer): Promise<BlobBlock> {
+    const blockId = ContentId.of(content);
+    await this._putBlock(blockId, content);
+    return { blockId, size: content.length };
+  }
+
+  async setBlobBlocks(
+    blobId: string,
+    blocks: BlobBlock[],
+  ): Promise<BlobProperties> {
+    if (await this.blobExists(blobId)) {
+      return this.getBlobProperties(blobId);
+    }
+    const size = await verifyBlob(blobId, blocks, this._readBlock);
+    return this._storeBlob(blobId, size, blocks);
+  }
+
+  /**
+   * Deletes what the layout before blocks left in the base directory: one
+   * file per blob, in directories of two characters directly under it. The
+   * blobs there cannot be read any more. Everything else in the base
+   * directory stays: `blocks/`, `blobs/` and anything else kept beside them.
+   * @returns How many directories were deleted.
+   */
+  async removeOldLayout(): Promise<number> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(this.baseDir, { withFileTypes: true });
+    } catch {
+      return 0;
+    }
+    const old = entries.filter(
+      (entry) => entry.isDirectory() && entry.name.length === 2,
+    );
+    for (const entry of old) {
+      await rm(join(this.baseDir, entry.name), {
+        recursive: true,
+        force: true,
+      });
+    }
+    return old.length;
+  }
+
+  /**
+   * Recursively find all blob files in the storage directory
    */
   private async findAllBlobs(): Promise<BlobProperties[]> {
     const blobs: BlobProperties[] = [];
@@ -423,17 +366,14 @@ export class BsFs implements Bs {
 
           if (entry.isDirectory()) {
             await scanDir(fullPath);
-          } else if (entry.isFile() && entry.name.endsWith('.meta.json')) {
+          } else if (entry.isFile() && entry.name.endsWith('.json')) {
             try {
-              const metaContent = await readFile(fullPath, 'utf8');
-              const metadata: StoredMetadata = JSON.parse(metaContent);
-              blobs.push({
-                blobId: metadata.blobId,
-                size: metadata.size,
-                createdAt: new Date(metadata.createdAt),
-              });
+              const stored = JSON.parse(
+                await readFile(fullPath, 'utf8'),
+              ) as StoredBlob;
+              blobs.push(BsFs._properties(stored));
             } catch {
-              // Skip invalid metadata files
+              // Skip invalid blob files
             }
           }
         }
@@ -442,7 +382,7 @@ export class BsFs implements Bs {
       }
     };
 
-    await scanDir(this.baseDir);
+    await scanDir(join(this.baseDir, 'blobs'));
     return blobs;
   }
 
@@ -491,12 +431,8 @@ export class BsFs implements Bs {
     expiresIn: number,
     permissions?: 'read' | 'delete',
   ): Promise<string> {
-    const { filePath } = this.getBlobPath(blobId);
-
     // Check if blob exists
-    try {
-      await access(filePath);
-    } catch {
+    if (!(await this.blobExists(blobId))) {
       throw new Error(`Blob not found: ${blobId}`);
     }
 
