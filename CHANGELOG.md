@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Unlisted blocks are collected, the disk usage is reported
+
+- **`collectGarbage({ graceMs })`** removes the block files no blob file
+  lists any more, once they were last stored more than `graceMs` ago (default
+  `BsFs.defaultGraceMs`, ten minutes), and the directories they leave empty.
+  It resolves to `{ removedBlocks, freedBytes }`.
+- **It errs on the side of keeping:** a blob file that cannot be read makes it
+  reject before anything is removed; the blocks of the blobs this instance is
+  writing stay whatever their age; storing a block and removing it never
+  overlap; one sweep runs at a time, a second call after the first.
+- **Storing a block that is stored already sets its modification time to
+  now** (`setBlob`, `setBlock`); `setBlobBlocks` does the same for the blocks
+  it lists. The grace period counts from there.
+- **`usage()`** resolves to `{ blobs, blocks, bytes }`: the blob files, the
+  block files and the bytes of the block files on disk.
+- New types: `CollectGarbageOptions`, `CollectGarbageResult`, `BsFsUsage`.
+
+### Ids are checked before they become paths — security fix
+
+- **A blob or block id must be plain:** one or more letters, digits, `-` and
+  `_`, the characters of every id the store makes. An id with `/`, `\`, `.`
+  or any other character, or an empty one, never becomes a path, so it can no
+  longer read, change or delete a file outside the store.
+- **`blobExists` and `blockExists` answer `false`** for such an id without
+  touching the disk. **`getBlob`, `getBlobStream`, `getBlobBlocks`,
+  `getBlobProperties`, `getBlock`, `deleteBlob`, `generateSignedUrl` and
+  `setBlobBlocks` reject** with `Invalid blob id: "<id>"` or
+  `Invalid block id: "<id>"`; so does reading a blob whose file lists such a
+  block id. `setBlobBlocks` checks all ids before it touches anything.
+
+## [0.1.0]
+
 ### Blobs are stored as blocks — breaking
 
 - **New layout.** `blocks/` holds each block once (`ab/cd/ef/gh/<blockId>`),

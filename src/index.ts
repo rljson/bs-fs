@@ -5,3 +5,8 @@
 // found in the LICENSE file in the root of this package.
 
 export { BsFs } from './bs-fs.ts';
+export type {
+  BsFsUsage,
+  CollectGarbageOptions,
+  CollectGarbageResult,
+} from './bs-fs.ts';

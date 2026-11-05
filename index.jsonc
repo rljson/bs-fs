@@ -9,12 +9,12 @@
   "name": "@rljson/bs-fs",
 
   // 1-2 sentence summary about this repo.
-  "summary": "File-system Bs: each block once under blocks/, each blob as a JSON block list under blobs/.",
+  "summary": "File-system Bs: each block once under blocks/, each blob as a JSON block list under blobs/; collects unlisted blocks, reports disk usage.",
 
   // 1-3 bullet points: the problem space.
   "domain": [
     "persistent blob/block store on disk",
-    "atomic writes, block dedup",
+    "atomic writes, block dedup, block garbage collection (collectGarbage, grace period), disk usage (usage)",
     "removeOldLayout: drop the one-file-per-blob layout"
   ],
 
