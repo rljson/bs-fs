@@ -4,11 +4,9 @@
 // Use of this source code is governed by terms that can be
 // found in the LICENSE file in the root of this package.
 
-import { execFileSync } from 'node:child_process';
 import {
   access,
   mkdir,
-  open,
   readdir,
   readFile,
   rm,
@@ -18,7 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ContentId } from '@rljson/bs';
 
@@ -845,22 +843,43 @@ describe('BsFs', () => {
     });
 
     it('keeps the blocks of a blob whose file is written after it read the blob files', async () => {
-      // A blob file that cannot be read to its end yet holds the sweep
-      // between reading the blob files and removing blocks.
+      // The sweep is held while it reads a blob file, between reading the
+      // blob files and removing blocks. A fifo cannot hold it everywhere:
+      // Git's mkfifo on Windows makes a plain file, read at once.
       const slowFile = join(testDir, 'blobs', 'slow.json');
       await mkdir(join(testDir, 'blobs'), { recursive: true });
-      execFileSync('mkfifo', [slowFile]);
-      const { content, writing, close } = await startWriting();
+      await writeFile(slowFile, '{"blocks":[]}');
+      let reading = () => {};
+      const read = new Promise<void>((resolve) => (reading = resolve));
+      let release = () => {};
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const blobFiles = BsFs as unknown as {
+        _blocksListedIn(path: string): Promise<string[]>;
+      };
+      const readBlobFile = blobFiles._blocksListedIn.bind(BsFs);
+      const held = vi
+        .spyOn(blobFiles, '_blocksListedIn')
+        .mockImplementation(async (path) => {
+          if (path === slowFile) {
+            reading();
+            await released;
+          }
+          return readBlobFile(path);
+        });
+      try {
+        const { content, writing, close } = await startWriting();
 
-      const sweep = bs.collectGarbage({ graceMs: 0 });
-      const slow = await open(slowFile, 'w'); // The sweep reads it now
-      close();
-      const { blobId } = await writing;
-      await slow.writeFile('{"blocks":[]}');
-      await slow.close();
+        const sweep = bs.collectGarbage({ graceMs: 0 });
+        await read; // The sweep reads the blob files now
+        close();
+        const { blobId } = await writing;
+        release();
 
-      expect(await sweep).toEqual({ removedBlocks: 0, freedBytes: 0 });
-      expect((await bs.getBlob(blobId)).content.equals(content)).toBe(true);
+        expect(await sweep).toEqual({ removedBlocks: 0, freedBytes: 0 });
+        expect((await bs.getBlob(blobId)).content.equals(content)).toBe(true);
+      } finally {
+        held.mockRestore();
+      }
     });
 
     it('never removes a block once setBlock stored it again', async () => {
