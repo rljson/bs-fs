@@ -2,4 +2,4 @@
 // Kept in sync by test/bs_fs_version.spec.ts.
 
 /** The version of the `@rljson/bs-fs` package. */
-export const bsFsVersion = '0.1.0';
+export const bsFsVersion = '0.2.0';
