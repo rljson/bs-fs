@@ -14,16 +14,16 @@ importers:
   .:
     dependencies:
       '@rljson/bs':
-        specifier: link:.gg\ts_links\@rljson\bs
+        specifier: link:.gg/ts_links/@rljson/bs
         version: link:.gg/ts_links/@rljson/bs
       '@rljson/hash':
-        specifier: link:.gg\ts_links\@rljson\hash
+        specifier: link:.gg/ts_links/@rljson/hash
         version: link:.gg/ts_links/@rljson/hash
       '@rljson/json':
         specifier: 0.0.23
         version: 0.0.23
       '@rljson/rljson':
-        specifier: link:.gg\ts_links\@rljson\rljson
+        specifier: link:.gg/ts_links/@rljson/rljson
         version: link:.gg/ts_links/@rljson/rljson
     devDependencies:
       '@rljson/dna-rljson':
