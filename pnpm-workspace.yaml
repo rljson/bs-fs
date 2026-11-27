@@ -5,5 +5,4 @@
 overrides:
   "@rljson\/bs": link:./.gg/ts_links/@rljson/bs
   "@rljson\/hash": link:./.gg/ts_links/@rljson/hash
-  "@rljson\/dna-rljson": link:../dna_rljson
   "@rljson\/rljson": link:./.gg/ts_links/@rljson/rljson
