@@ -52,10 +52,10 @@
     "vitest-dom": "^0.1.1"
   },
   "dependencies": {
-    "@rljson/bs": "0.1.1",
-    "@rljson/hash": "0.0.21",
+    "@rljson/bs": "0.1.2",
+    "@rljson/hash": "0.0.22",
     "@rljson/json": "0.0.23",
-    "@rljson/rljson": "0.0.89"
+    "@rljson/rljson": "0.0.90"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
